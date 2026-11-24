@@ -109,11 +109,10 @@ def _logo_reader(max_width, max_height):
     from apps.business.models import BusinessSettings
 
     business = BusinessSettings.load()
-    if not (business.receipt_show_logo and business.logo):
+    if not (business.receipt_show_logo and business.logo_data):
         return None
     try:
-        with business.logo.open("rb") as handle:
-            reader = ImageReader(BytesIO(handle.read()))
+        reader = ImageReader(BytesIO(bytes(business.logo_data)))
         img_w, img_h = reader.getSize()
         ratio = min(max_width / img_w, max_height / img_h)
         return reader, img_w * ratio, img_h * ratio

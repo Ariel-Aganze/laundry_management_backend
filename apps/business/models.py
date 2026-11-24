@@ -22,7 +22,10 @@ class BusinessSettings(UUIDModel):
     phone_number = models.CharField(max_length=30, blank=True)
     address = models.TextField(blank=True)
     email = models.EmailField(blank=True)
-    logo = models.ImageField(upload_to="business/", blank=True, null=True)
+    # The logo is stored in the database (not on disk) so it survives redeploys
+    # on hosts with ephemeral file systems. Resized to max 512px on upload.
+    logo_data = models.BinaryField(null=True, blank=True, editable=False)
+    logo_content_type = models.CharField(max_length=30, blank=True, editable=False)
     currency = models.CharField(max_length=10, default="RWF")
     currency_decimals = models.PositiveSmallIntegerField(
         default=0, validators=[MinValueValidator(0), MaxValueValidator(2)]

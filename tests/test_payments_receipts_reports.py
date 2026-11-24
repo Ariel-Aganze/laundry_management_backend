@@ -182,3 +182,35 @@ class AuditTests(APITestBase):
         entry.description = "tampered"
         with self.assertRaises(RuntimeError):
             entry.save()
+
+
+class LogoTests(APITestBase):
+    def test_logo_is_stored_in_database_and_served(self):
+        from io import BytesIO
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        buf = BytesIO()
+        Image.new("RGB", (1200, 600), "navy").save(buf, format="JPEG")
+        upload = SimpleUploadedFile("logo.jpg", buf.getvalue(), content_type="image/jpeg")
+        self.login_as(self.admin)
+        response = self.client.patch("/api/v1/settings/", {"logo": upload}, format="multipart")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("/api/v1/settings/logo/?v=", response.data["logo_url"])
+
+        self.client.force_authenticate(user=None)
+        image = self.client.get("/api/v1/settings/logo/")
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image["Content-Type"], "image/png")
+        self.assertLessEqual(max(Image.open(BytesIO(image.content)).size), 512)
+
+        # Receipts still render with the stored logo
+        order = self.create_order(items=[{"service_item": str(self.shirt.id), "quantity": 1}])
+        pdf = self.client.get(f"/api/v1/receipts/{order['receipt']['id']}/pdf/")
+        self.assertEqual(pdf.status_code, 200)
+
+        self.login_as(self.admin)
+        self.client.patch("/api/v1/settings/", {"remove_logo": True}, format="json")
+        self.client.force_authenticate(user=None)
+        self.assertEqual(self.client.get("/api/v1/settings/logo/").status_code, 404)

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.env.example
+
+# Local data
+db.sqlite3
+media/
+staticfiles/
+backups/
+
+# Tooling
+.coverage
+htmlcov/
+.pytest_cache/
+.DS_Store
+.vscode/
+.idea/

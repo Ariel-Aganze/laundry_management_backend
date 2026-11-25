@@ -27,6 +27,7 @@ class PaymentStatus(models.TextChoices):
 class ServiceType(models.TextChoices):
     NORMAL = "NORMAL", "Normal"
     EXPRESS = "EXPRESS", "Express"
+    CUSTOM = "CUSTOM", "Custom"  # price typed in when the order is registered
 
 
 class CollectionApproval(models.TextChoices):
@@ -152,6 +153,8 @@ class OrderItem(TimeStampedModel):
     unit_price = MoneyField()
     subtotal = MoneyField()
     condition_notes = models.TextField(blank=True)
+    # Offered service: the unit price is kept for reference but the line counts 0.
+    is_free = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["created_at", "id"]

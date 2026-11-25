@@ -213,3 +213,73 @@ class StatusAndCollectionTests(APITestBase):
         self.assertEqual(len(response.data["payments"]), 1)
         # no more payments, no edits
         self.assertEqual(self.pay(order["id"], 100).status_code, 400)
+
+
+class CustomAndFreePricingTests(APITestBase):
+    def test_custom_price_is_entered_and_summed(self):
+        order = self.create_order(items=[
+            {"service_item": str(self.shirt.id), "service_type": "CUSTOM", "custom_price": "800", "quantity": 3},
+            {"service_item": str(self.suit.id), "service_type": "NORMAL", "quantity": 1},
+        ])
+        custom = next(i for i in order["items"] if i["service_type"] == "CUSTOM")
+        self.assertEqual(Decimal(custom["unit_price"]), Decimal("800"))
+        self.assertEqual(Decimal(custom["subtotal"]), Decimal("2400"))
+        self.assertEqual(Decimal(order["total_amount"]), Decimal("6400"))  # 2400 + 4000
+        self.assertIn("custom price", AuditLog.objects.get(action=AuditAction.ORDER_CREATED).description)
+
+    def test_custom_price_required(self):
+        self.login_as(self.cashier)
+        payload = self.order_payload(items=[{"service_item": str(self.shirt.id), "service_type": "CUSTOM", "quantity": 1}])
+        response = self.client.post("/api/v1/orders/", payload, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Order.objects.count(), 0)
+
+    def test_custom_price_ignored_for_normal(self):
+        order = self.create_order(items=[{"service_item": str(self.shirt.id), "service_type": "NORMAL", "custom_price": "1", "quantity": 1}])
+        self.assertEqual(Decimal(order["total_amount"]), Decimal("1000"))
+
+    def test_free_of_charge_counts_zero_but_keeps_price(self):
+        order = self.create_order(items=[
+            {"service_item": str(self.shirt.id), "quantity": 2, "is_free": True},
+            {"service_item": str(self.trousers.id), "quantity": 1},
+        ])
+        free = next(i for i in order["items"] if i["is_free"])
+        self.assertEqual(Decimal(free["unit_price"]), Decimal("1000"))
+        self.assertEqual(Decimal(free["subtotal"]), Decimal("0"))
+        self.assertEqual(order["total_quantity"], 3)
+        self.assertEqual(Decimal(order["total_amount"]), Decimal("1500"))
+        self.assertTrue(order["receipt"]["data"]["items"][0]["is_free"])
+        self.login_as(self.cashier)
+        pdf = self.client.get(f"/api/v1/receipts/{order['receipt']['id']}/pdf/?lang=rw")
+        self.assertEqual(pdf.status_code, 200)
+
+    def test_fully_free_order_is_paid_and_collectable(self):
+        order = self.create_order(items=[{"service_item": str(self.suit.id), "quantity": 1, "is_free": True}])
+        self.assertEqual(order["payment_status"], "PAID")
+        self.assertEqual(Decimal(order["balance"]), Decimal("0"))
+        self.login_as(self.cashier)
+        response = self.client.post(f"/api/v1/orders/{order['id']}/status/", {"status": "COLLECTED"}, format="json")
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_can_switch_line_to_custom_or_free(self):
+        order = self.create_order(items=[{"service_item": str(self.shirt.id), "quantity": 2}])
+        item_id = order["items"][0]["id"]
+        self.login_as(self.admin)
+        url = f"/api/v1/orders/{order['id']}/"
+        r = self.client.patch(url, {"items": [{"id": item_id, "service_item": str(self.shirt.id), "service_type": "CUSTOM", "custom_price": "700", "quantity": 2}]}, format="json")
+        self.assertEqual(Decimal(r.data["total_amount"]), Decimal("1400"))
+        r = self.client.patch(url, {"items": [{"id": item_id, "service_item": str(self.shirt.id), "service_type": "CUSTOM", "custom_price": "700", "quantity": 2, "is_free": True}]}, format="json")
+        self.assertEqual(Decimal(r.data["total_amount"]), Decimal("0"))
+        self.assertEqual(r.data["payment_status"], "PAID")
+
+    def test_analytics_include_custom_and_free(self):
+        self.create_order(items=[
+            {"service_item": str(self.shirt.id), "service_type": "CUSTOM", "custom_price": "500", "quantity": 2},
+            {"service_item": str(self.suit.id), "quantity": 1, "is_free": True},
+        ])
+        self.login_as(self.admin)
+        data = self.client.get("/api/v1/analytics/services/?period=today").data
+        custom = next(s for s in data["service_types"] if s["service_type"] == "CUSTOM")
+        self.assertEqual(custom["value"], "1000.00")
+        self.assertEqual(data["free_items"]["quantity"], 1)
+        self.assertEqual(data["free_items"]["value_given"], "4000.00")

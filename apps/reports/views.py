@@ -14,7 +14,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.db.models import Count, DecimalField, Max, Min, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, Max, Min, Q, Sum, Value
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from rest_framework import generics
@@ -249,6 +249,13 @@ class ServiceAnalyticsView(APIView):
             )
             .order_by("-quantity", "-value")[:limit]
         )
+        free = items.filter(is_free=True).aggregate(
+            free_quantity=Sum("quantity"),
+            free_lines=Count("id"),
+            free_value=Coalesce(
+                Sum(F("unit_price") * F("quantity"), output_field=MONEY_OUTPUT), Value(ZERO), output_field=MONEY_OUTPUT
+            ),
+        )
         by_type = {
             row["service_type"]: row
             for row in items.values("service_type").annotate(
@@ -287,8 +294,14 @@ class ServiceAnalyticsView(APIView):
                         "orders": by_type.get(key, {}).get("orders") or 0,
                         "value": m(by_type.get(key, {}).get("value") or 0),
                     }
-                    for key in ("NORMAL", "EXPRESS")
+                    for key in ("NORMAL", "EXPRESS", "CUSTOM")
                 ],
+                "free_items": {
+                    "quantity": free["free_quantity"] or 0,
+                    "lines": free["free_lines"],
+                    # What these pieces would have cost at the recorded unit price.
+                    "value_given": m(free["free_value"]),
+                },
             }
         )
 

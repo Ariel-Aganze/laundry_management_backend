@@ -53,6 +53,7 @@ def build_receipt_data(*, order, receipt_number, receipt_type, user, payment=Non
                 "quantity": item.quantity,
                 "unit_price": item.unit_price,
                 "subtotal": item.subtotal,
+                "is_free": item.is_free,
                 "condition_notes": item.condition_notes,
             }
             for item in items

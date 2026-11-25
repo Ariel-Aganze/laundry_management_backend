@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -26,6 +28,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "quantity",
             "unit_price",
             "subtotal",
+            "is_free",
             "condition_notes",
         ]
         read_only_fields = fields
@@ -124,7 +127,22 @@ class OrderItemInputSerializer(serializers.Serializer):
     service_item = serializers.PrimaryKeyRelatedField(queryset=ServiceItem.objects.select_related("category"))
     service_type = serializers.ChoiceField(choices=ServiceType.choices, default=ServiceType.NORMAL)
     quantity = serializers.IntegerField(min_value=1, max_value=10000)
+    custom_price = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True,
+        help_text="Required when service_type is CUSTOM; ignored otherwise.",
+    )
+    is_free = serializers.BooleanField(required=False, default=False, help_text="Offered service: counts 0.")
     condition_notes = serializers.CharField(required=False, allow_blank=True, max_length=1000, default="")
+
+    def validate(self, attrs):
+        if attrs.get("service_type") == ServiceType.CUSTOM:
+            if attrs.get("custom_price") is None:
+                raise serializers.ValidationError(
+                    {"custom_price": ["Enter the custom price for this item."]}, code="custom_price_required"
+                )
+        else:
+            attrs.pop("custom_price", None)
+        return attrs
 
 
 class OrderCreateSerializer(serializers.Serializer):

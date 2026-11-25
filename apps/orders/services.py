@@ -16,7 +16,7 @@ from apps.common.exceptions import BusinessRuleError
 from apps.common.fields import ZERO
 from apps.common.sequences import next_sequence_value
 
-from .models import CLOSED_STATUSES, CollectionApproval, Order, OrderItem, OrderStatus, PaymentStatus
+from .models import CLOSED_STATUSES, CollectionApproval, Order, OrderItem, OrderStatus, PaymentStatus, ServiceType
 
 # Allowed manual status transitions (cancellation has its own endpoint).
 STATUS_TRANSITIONS = {
@@ -49,9 +49,27 @@ def compute_payment_status(total, paid):
     return PaymentStatus.PARTIALLY_PAID
 
 
-def build_order_item(order, *, service_item, service_type, quantity, condition_notes=""):
-    """Create an (unsaved) OrderItem with the price copied from the catalog (BR-007)."""
-    unit_price = service_item.price_for(service_type)
+def resolve_unit_price(service_item, service_type, custom_price=None):
+    """Normal/Express prices come from the catalog; Custom prices are typed in for the order."""
+    if service_type == ServiceType.CUSTOM:
+        if custom_price is None:
+            raise BusinessRuleError("Enter the custom price for this item.", code="custom_price_required")
+        custom_price = Decimal(custom_price)
+        if custom_price < ZERO:
+            raise BusinessRuleError("The price cannot be negative.", code="invalid_amount")
+        return custom_price.quantize(Decimal("0.01"))
+    return service_item.price_for(service_type)
+
+
+def line_subtotal(unit_price, quantity, is_free):
+    return ZERO if is_free else unit_price * quantity
+
+
+def build_order_item(
+    order, *, service_item, service_type, quantity, condition_notes="", custom_price=None, is_free=False, **_
+):
+    """Create an (unsaved) OrderItem; the price is copied at this moment (BR-007)."""
+    unit_price = resolve_unit_price(service_item, service_type, custom_price)
     return OrderItem(
         order=order,
         service_item=service_item,
@@ -61,7 +79,8 @@ def build_order_item(order, *, service_item, service_type, quantity, condition_n
         service_type=service_type,
         quantity=quantity,
         unit_price=unit_price,
-        subtotal=unit_price * quantity,
+        subtotal=line_subtotal(unit_price, quantity, is_free),
+        is_free=bool(is_free),
         condition_notes=(condition_notes or "").strip(),
     )
 
@@ -100,11 +119,23 @@ def order_audit_snapshot(order):
                 "quantity": item.quantity,
                 "unit_price": item.unit_price,
                 "subtotal": item.subtotal,
+                "is_free": item.is_free,
                 "condition_notes": item.condition_notes,
             }
             for item in order.items.all()
         ],
     }
+
+
+def _special_pricing_note(order):
+    custom = order.items.filter(service_type=ServiceType.CUSTOM).count()
+    free = order.items.filter(is_free=True).count()
+    parts = []
+    if custom:
+        parts.append(f"{custom} line(s) with custom price")
+    if free:
+        parts.append(f"{free} line(s) free of charge")
+    return f" Special pricing: {', '.join(parts)}." if parts else ""
 
 
 def _lock(order):
@@ -172,13 +203,7 @@ def create_order(
     )
     OrderItem.objects.bulk_create(
         [
-            build_order_item(
-                order,
-                service_item=entry["service_item"],
-                service_type=entry["service_type"],
-                quantity=entry["quantity"],
-                condition_notes=entry.get("condition_notes", ""),
-            )
+            build_order_item(order, **entry)
             for entry in items
         ]
     )
@@ -194,6 +219,7 @@ def create_order(
         description=(
             f"Created order {order.reference} for {customer.full_name}: "
             f"{order.total_quantity} item(s), total {order.total_amount}."
+            + _special_pricing_note(order)
         ),
         new_values=order_audit_snapshot(order),
     )
@@ -224,33 +250,28 @@ def _replace_items(order, items_data):
             if item is None:
                 raise BusinessRuleError("An item does not belong to this order.", code="invalid_item")
             keep.add(item_id)
-            if item.service_item_id != service_item.pk or item.service_type != service_type:
+            if service_type == ServiceType.CUSTOM:
+                # Custom prices are always taken from the edit.
+                fresh = build_order_item(order, **{**entry, "quantity": 1})
+                copy_fields = ("service_item", "category", "item_name_snapshot", "category_name_snapshot", "service_type", "unit_price")
+            elif item.service_item_id != service_item.pk or item.service_type != service_type:
                 # Different service / type: price comes from the current catalog.
                 fresh = build_order_item(order, service_item=service_item, service_type=service_type, quantity=1)
-                for field in (
-                    "service_item",
-                    "category",
-                    "item_name_snapshot",
-                    "category_name_snapshot",
-                    "service_type",
-                    "unit_price",
-                ):
-                    setattr(item, field, getattr(fresh, field))
-            # Same service & type: keep the historical unit price (BR-008).
+                copy_fields = ("service_item", "category", "item_name_snapshot", "category_name_snapshot", "service_type", "unit_price")
+            else:
+                copy_fields = ()  # Same service & type: keep the historical unit price (BR-008).
+            for field in copy_fields:
+                setattr(item, field, getattr(fresh, field))
             item.quantity = entry["quantity"]
-            item.subtotal = item.unit_price * item.quantity
+            if "is_free" in entry:
+                item.is_free = bool(entry["is_free"])
+            item.subtotal = line_subtotal(item.unit_price, item.quantity, item.is_free)
             if "condition_notes" in entry:
                 item.condition_notes = (entry.get("condition_notes") or "").strip()
             item.save()
         else:
             _ensure_orderable(service_item)
-            build_order_item(
-                order,
-                service_item=service_item,
-                service_type=service_type,
-                quantity=entry["quantity"],
-                condition_notes=entry.get("condition_notes", ""),
-            ).save()
+            build_order_item(order, **entry).save()
     removed = [pk for pk in existing if pk not in keep]
     if removed:
         order.items.filter(pk__in=removed).delete()

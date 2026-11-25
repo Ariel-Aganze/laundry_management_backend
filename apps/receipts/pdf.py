@@ -155,10 +155,17 @@ def _build(layout, data, lang):
 
     for item in data.get("items", []):
         layout.text(f"{item['item']} - {item['category']}", bold=True)
-        layout.pair(
-            f"{item['quantity']} x {money(item['unit_price'])} ({label(item['service_type'], lang)})",
-            money(item["subtotal"]),
-        )
+        if item.get("is_free"):
+            layout.pair(
+                f"{item['quantity']} x {money(item['unit_price'])} ({label(item['service_type'], lang)})",
+                label("free", lang),
+                bold=True,
+            )
+        else:
+            layout.pair(
+                f"{item['quantity']} x {money(item['unit_price'])} ({label(item['service_type'], lang)})",
+                money(item["subtotal"]),
+            )
         if item.get("condition_notes"):
             layout.text(f"{label('notes', lang)}: {item['condition_notes']}", scale=0.88)
         layout.space(layout.base * 0.3)
